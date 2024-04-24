@@ -157,9 +157,12 @@ download/
 pickle/
 new/
 docs/
+docs
 docs_output/
 esg_data/
 esg_pickle/
 esg_txt/
 *.log
 *log*.txt
+standards_pickle/
+standards_txt/

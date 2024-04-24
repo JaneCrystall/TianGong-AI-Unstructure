@@ -9,11 +9,11 @@ from xata.client import XataClient
 load_dotenv()
 
 xata = XataClient(
-    api_key=os.getenv("XATA_API_KEY"), db_url=os.getenv("XATA_ESG_DB_URL")
+    api_key=os.getenv("XATA_API_KEY"), db_url=os.getenv("XATA_DOCS_DB_URL")
 )
 
-table_name = "ESG"
-columns = ["id", "language"]
+table_name = "standards"
+columns = ["id"]
 filter = {"$notExists": "embedding_time"}
 
 
@@ -55,30 +55,26 @@ records = fetch_all_records(xata, table_name, columns, filter)
 
 def process_pdf(record):
     record_id = record["id"]
-    if record["language"] == "eng":
-        language = ["eng"]
-    else:
-        language = [record["language"], "eng"]
 
-    text_list = unstructure_pdf(
-        pdf_name="esg_data/" + record_id + ".pdf", languages=language
-    )
+    text_list = unstructure_pdf("docs/standards/" + record_id + ".pdf")
 
-    with open("esg_pickle/" + record_id + ".pkl", "wb") as f:
+    with open("standards_pickle/" + record_id + ".pkl", "wb") as f:
         pickle.dump(text_list, f)
 
     text_str = "\n----------\n".join(text_list)
 
-    with open("esg_txt/" + record_id + ".txt", "w") as f:
+    with open("standards_txt/" + record_id + ".txt", "w") as f:
         f.write(text_str)
 
 
-# record = {"id": "rec_coh3s2o41648vkt35lsg", "language": "chi_sim"}
+# record = {"id": "rec_clu17n8bslsq4fnfc8s0"}
+
+# record = {"id": "rec_cltid4e9hf9adk7qf2rg"}
 
 # process_pdf(record)
 
 # for record in records:
 #     process_pdf(record)
 
-with concurrent.futures.ProcessPoolExecutor(max_workers=16) as executor:
+with concurrent.futures.ProcessPoolExecutor(max_workers=30) as executor:
     executor.map(process_pdf, records)

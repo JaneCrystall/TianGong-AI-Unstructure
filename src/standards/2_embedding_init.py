@@ -14,7 +14,7 @@ from xata import XataClient
 load_dotenv()
 
 logging.basicConfig(
-    filename="esg_embedding.log",
+    filename="standard_embedding.log",
     level=logging.INFO,
     format="%(asctime)s:%(levelname)s:%(message)s",
     force=True,
@@ -23,7 +23,7 @@ logging.basicConfig(
 client = OpenAI()
 
 xata_api_key = os.getenv("XATA_API_KEY")
-xata_db_url = os.getenv("XATA_ESG_DB_URL")
+xata_db_url = os.getenv("XATA_DOCS_DB_URL")
 
 xata = XataClient(
     api_key=xata_api_key,
@@ -99,13 +99,13 @@ def merge_pickle_list(data):
 def upsert_vectors(vectors):
     try:
         idx.upsert(
-            vectors=vectors, batch_size=200, namespace="esg", show_progress=False
+            vectors=vectors, batch_size=200, namespace="standard", show_progress=False
         )
     except Exception as e:
         logging.error(e)
 
 
-dir = "esg_pickle"
+dir = "standards_pickle"
 
 aa = os.listdir(dir)
 
@@ -125,9 +125,9 @@ for file in os.listdir(dir):
         for index, e in enumerate(embeddings):
             fulltext_list.append(
                 {
-                    "sortNumber": index,
+                    "sort_number": index,
                     "text": data[index],
-                    "reportId": file_id,
+                    "standard_id": file_id,
                 }
             )
             vectors.append(
@@ -144,7 +144,7 @@ for file in os.listdir(dir):
         n = len(fulltext_list)
         for i in range(0, n, 500):
             batch = fulltext_list[i : i + 500]
-            result = xata.records().bulk_insert("ESG_Fulltext", {"records": batch})
+            result = xata.records().bulk_insert("standard_fulltext", {"records": batch})
 
         logging.info(
             f"{file_id} fulltext insert finished, with status_code: {result.status_code}"
@@ -153,7 +153,7 @@ for file in os.listdir(dir):
         upsert_vectors(vectors)
 
         embedded = xata.records().update(
-            "ESG_Reports", file_id, {"embedding_time": datetime.now(UTC).isoformat()}
+            "standards", file_id, {"embedding_time": datetime.now(UTC).isoformat()}
         )
 
         logging.info(f"{file_id} embedding finished")
