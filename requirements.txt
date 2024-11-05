@@ -6,7 +6,7 @@ openai
 opensearch-dsl
 opensearch-py
 oss2
-paddlepaddle-gpu
+paddlepaddle-cpu
 pinecone-client
 psycopg2-binary
 Pyarrow
@@ -18,3 +18,4 @@ tiktoken
 unstructured.PaddleOCR
 unstructured[all-docs]
 weaviate-client
+rispy
