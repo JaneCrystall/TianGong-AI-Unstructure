@@ -8,7 +8,7 @@ import rispy
 import weaviate
 import uuid
 
-from tools.unstructure_pdf import unstructure_pdf
+# from tools.unstructure_pdf import unstructure_pdf
 from tools.text_to_weaviate import merge_pickle_list, fix_utf8, split_chunks
 
 logging.basicConfig(
@@ -67,7 +67,7 @@ else:
     collection = client.collections.get(name="Audit")
 
 
-path = "法律法规/法律法规.ris"
+path = "law/test.ris"
 
 # 设置读取ris文件的根目录
 root = path.rsplit("/", 1)[0] + "/"
@@ -90,7 +90,7 @@ df_ris = pd.DataFrame(filtered_records)
 
 
 for index, row in df_ris.iterrows():
-    try:
+    # try:
         path = root + row["file_attachments1"]
         source = f"{row['title']}, {row['author']}, {row['date_enacted']}"
         path_without_pdf = path.replace(".pdf", "")
@@ -118,7 +118,7 @@ for index, row in df_ris.iterrows():
 
         collection.data.insert_many(chunks)
         logging.info(f"Inserted {path}")
-    except Exception as e:
-        logging.error(f"Error processing {path}: {e}")
+    # except Exception as e:
+    #     logging.error(f"Error processing {path}: {e}")
 
 client.close()
