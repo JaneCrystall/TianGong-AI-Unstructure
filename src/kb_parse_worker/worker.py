@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-from contextlib import nullcontext
 import logging
 import threading
 import time
@@ -14,10 +13,16 @@ import requests
 
 from . import control_plane, queue
 from .artifacts import write_processed_artifacts
+from .chunk_splitter import split_chunks_for_embedding
 from .config import WorkerConfig
 from .embedding_client import EmbeddingError, add_chunk_embeddings
 from .manifest import load_artifact_info
-from .parser_adapter import ParserError, parse_with_unstructure_serve
+from .parser_adapter import (
+    ParserError,
+    ParserTaskFailure,
+    ParserTimeout,
+    parse_with_unstructure_serve,
+)
 from .s3_ready import processed_manifest_key, wait_for_s3_processed_ready
 from .snapshot import (
     load_parse_snapshot,
@@ -86,6 +91,10 @@ def is_parse_failure_retryable(error: Exception) -> bool:
     if message.startswith("embedding response "):
         return False
 
+    if isinstance(error, ParserTimeout):
+        return True
+    if isinstance(error, ParserTaskFailure):
+        return True
     if isinstance(error, ParserError):
         return _is_retryable_http_status(_http_status_from_message("parser http error ", message))
     if isinstance(error, EmbeddingError):
@@ -114,6 +123,49 @@ def archive_current_message(conn, queue_name: str, msg_id: int) -> bool:
     return queue.archive_job_message_by_id(conn, queue_name, msg_id)
 
 
+def read_queue_message(
+    config: WorkerConfig,
+    queue_name: str,
+) -> queue.QueueMessage | None:
+    with control_plane.connect(config.database_url) as conn:
+        return queue.read_one(conn, queue_name, config.queue_vt_seconds)
+
+
+def claim_queue_message(
+    config: WorkerConfig,
+    queue_name: str,
+    message: queue.QueueMessage,
+) -> control_plane.ClaimJobResult | None:
+    with control_plane.connect(config.database_url) as conn:
+        claim = control_plane.claim_job(
+            conn,
+            message.job_id,
+            queue_name,
+            message.msg_id,
+            config.worker_id,
+            config.lock_seconds,
+        )
+        if claim is None or not claim.claimed:
+            handle_unclaimed_message(conn, queue_name, message, claim)
+        return claim
+
+
+def load_parse_snapshot_with_short_connection(
+    config: WorkerConfig,
+    job_id: str,
+):
+    with control_plane.connect(config.database_url) as conn:
+        return load_parse_snapshot(conn, job_id)
+
+
+def load_s3_ready_snapshot_with_short_connection(
+    config: WorkerConfig,
+    job_id: str,
+):
+    with control_plane.connect(config.database_url) as conn:
+        return load_s3_ready_snapshot(conn, job_id)
+
+
 def _is_retryable_finalization_error(error: Exception) -> bool:
     return isinstance(error, (psycopg2.InterfaceError, psycopg2.OperationalError))
 
@@ -124,7 +176,6 @@ def _finalization_backoff_seconds(attempt: int) -> float:
 
 def complete_parse_local_ready_and_archive_with_retry(
     config: WorkerConfig,
-    conn,
     job_id: str,
     document_id: str,
     document_version: int,
@@ -142,13 +193,8 @@ def complete_parse_local_ready_and_archive_with_retry(
         raise ValueError("max_attempts must be positive")
 
     for attempt in range(1, max_attempts + 1):
-        connection_context = (
-            nullcontext(conn)
-            if attempt == 1
-            else control_plane.connect(config.database_url)
-        )
         try:
-            with connection_context as active_conn:
+            with control_plane.connect(config.database_url) as active_conn:
                 result = control_plane.complete_parse_local_ready_and_enqueue_s3_check(
                     active_conn,
                     job_id,
@@ -207,7 +253,6 @@ def handle_unclaimed_message(
 
 def fail_job_and_archive_current_message(
     config: WorkerConfig,
-    conn,
     job_id: str,
     queue_name: str,
     msg_id: int,
@@ -221,13 +266,8 @@ def fail_job_and_archive_current_message(
         raise ValueError("max_attempts must be positive")
 
     for attempt in range(1, max_attempts + 1):
-        connection_context = (
-            nullcontext(conn)
-            if attempt == 1
-            else control_plane.connect(config.database_url)
-        )
         try:
-            with connection_context as active_conn:
+            with control_plane.connect(config.database_url) as active_conn:
                 result = control_plane.fail_job(
                     active_conn,
                     job_id,
@@ -264,7 +304,6 @@ def fail_job_and_archive_current_message(
 
 def complete_s3_ready_check_and_archive_with_retry(
     config: WorkerConfig,
-    conn,
     job_id: str,
     document_id: str,
     document_version: int,
@@ -281,13 +320,8 @@ def complete_s3_ready_check_and_archive_with_retry(
         raise ValueError("max_attempts must be positive")
 
     for attempt in range(1, max_attempts + 1):
-        connection_context = (
-            nullcontext(conn)
-            if attempt == 1
-            else control_plane.connect(config.database_url)
-        )
         try:
-            with connection_context as active_conn:
+            with control_plane.connect(config.database_url) as active_conn:
                 ok = control_plane.complete_s3_ready_check(
                     active_conn,
                     job_id,
@@ -395,29 +429,19 @@ class ParseWorker:
                 time.sleep(self.config.poll_interval_seconds)
 
     def run_once(self) -> bool:
-        with control_plane.connect(self.config.database_url) as conn:
-            message = queue.read_one(conn, self.config.queue_name, self.config.queue_vt_seconds)
-            if message is None:
-                return False
-            self.process_message(conn, message)
-            return True
+        message = read_queue_message(self.config, self.config.queue_name)
+        if message is None:
+            return False
+        self.process_message(message)
+        return True
 
-    def process_message(self, conn, message: queue.QueueMessage) -> None:
-        claimed = control_plane.claim_job(
-            conn,
-            message.job_id,
-            self.config.queue_name,
-            message.msg_id,
-            self.config.worker_id,
-            self.config.lock_seconds,
-        )
+    def process_message(self, message: queue.QueueMessage) -> None:
+        claimed = claim_queue_message(self.config, self.config.queue_name, message)
         if claimed is None or not claimed.claimed:
-            handle_unclaimed_message(conn, self.config.queue_name, message, claimed)
             return
         if claimed.stage != "parse":
             fail_job_and_archive_current_message(
                 self.config,
-                conn,
                 claimed.job_id,
                 self.config.queue_name,
                 message.msg_id,
@@ -432,7 +456,10 @@ class ParseWorker:
             with LeaseMaintainer(self.config, claimed.job_id) as lease:
                 deadline = JobDeadline("parse", self.config.parse_job_timeout_seconds)
                 deadline.check()
-                snapshot = load_parse_snapshot(conn, claimed.job_id)
+                snapshot = load_parse_snapshot_with_short_connection(
+                    self.config,
+                    claimed.job_id,
+                )
                 if snapshot.processed_manifest_local_uri and snapshot.processed_artifact_uuid:
                     manifest_path = Path(snapshot.processed_manifest_local_uri)
                     artifact_info = load_artifact_info(manifest_path, snapshot.processed_manifest_hash)
@@ -466,6 +493,22 @@ class ParseWorker:
                         timeout_seconds=deadline.remaining_seconds(
                             self.config.parse_job_timeout_seconds
                         ),
+                        use_two_stage=self.config.use_two_stage_parser,
+                        two_stage_base_url=self.config.unstructure_serve_two_stage_base_url,
+                        two_stage_submit_timeout_seconds=(
+                            self.config.two_stage_submit_timeout_seconds
+                        ),
+                        two_stage_status_timeout_seconds=(
+                            self.config.two_stage_status_timeout_seconds
+                        ),
+                        two_stage_poll_interval_seconds=(
+                            self.config.two_stage_poll_interval_seconds
+                        ),
+                        two_stage_priority=self.config.two_stage_priority,
+                        two_stage_chunk_type=True,
+                        two_stage_provider=self.config.two_stage_provider,
+                        two_stage_model=self.config.two_stage_model,
+                        two_stage_prompt=self.config.two_stage_prompt,
                     )
                     result = parsed.result
                     if parsed.dropped_empty_text_count:
@@ -478,8 +521,24 @@ class ParseWorker:
                     lease.check()
                     deadline.check()
 
-                    result = add_chunk_embeddings(
+                    embedding_chunks, split_stats = split_chunks_for_embedding(
                         result,
+                        snapshot.document_id,
+                        self.config.embedding_chunk_max_tokens,
+                    )
+                    if split_stats.split_parent_count:
+                        LOGGER.info(
+                            "parse job %s split %s/%s parser chunk(s) into %s embedding chunk(s)",
+                            claimed.job_id,
+                            split_stats.split_parent_count,
+                            split_stats.source_chunk_count,
+                            split_stats.output_chunk_count,
+                        )
+                    lease.check()
+                    deadline.check()
+
+                    embedded_result = add_chunk_embeddings(
+                        embedding_chunks,
                         self.config.embedding_base_url,
                         self.config.embedding_model,
                         self.config.embedding_api_key,
@@ -497,15 +556,20 @@ class ParseWorker:
                         "dimensions": self.config.embedding_dimensions,
                         "normalized": True,
                         "source_dimensions": "provider_default",
+                        "chunk_max_tokens": self.config.embedding_chunk_max_tokens,
+                        "source_chunk_count": split_stats.source_chunk_count,
+                        "embedding_chunk_count": split_stats.output_chunk_count,
+                        "split_parent_count": split_stats.split_parent_count,
                     }
                     final_dir, artifact_info = write_processed_artifacts(
-                        result,
+                        embedded_result,
                         snapshot,
                         self.config.nas_processed_root,
                         self.config.parser_profile,
                         self.config.parser_version,
                         embedding_metadata,
                         parsed.txt,
+                        result,
                     )
                     lease.check()
                     deadline.check()
@@ -536,7 +600,6 @@ class ParseWorker:
                 }
                 s3_ready_result = complete_parse_local_ready_and_archive_with_retry(
                     self.config,
-                    conn,
                     claimed.job_id,
                     claimed.document_id,
                     claimed.document_version,
@@ -560,7 +623,6 @@ class ParseWorker:
             retryable = is_parse_failure_retryable(exc)
             fail_job_and_archive_current_message(
                 self.config,
-                conn,
                 claimed.job_id,
                 self.config.queue_name,
                 message.msg_id,
@@ -582,33 +644,19 @@ class S3ReadyWorker:
                 time.sleep(self.config.poll_interval_seconds)
 
     def run_once(self) -> bool:
-        with control_plane.connect(self.config.database_url) as conn:
-            message = queue.read_one(
-                conn,
-                self.config.s3_ready_queue_name,
-                self.config.queue_vt_seconds,
-            )
-            if message is None:
-                return False
-            self.process_message(conn, message)
-            return True
+        message = read_queue_message(self.config, self.config.s3_ready_queue_name)
+        if message is None:
+            return False
+        self.process_message(message)
+        return True
 
-    def process_message(self, conn, message: queue.QueueMessage) -> None:
-        claimed = control_plane.claim_job(
-            conn,
-            message.job_id,
-            self.config.s3_ready_queue_name,
-            message.msg_id,
-            self.config.worker_id,
-            self.config.lock_seconds,
-        )
+    def process_message(self, message: queue.QueueMessage) -> None:
+        claimed = claim_queue_message(self.config, self.config.s3_ready_queue_name, message)
         if claimed is None or not claimed.claimed:
-            handle_unclaimed_message(conn, self.config.s3_ready_queue_name, message, claimed)
             return
         if claimed.stage != "s3_ready":
             fail_job_and_archive_current_message(
                 self.config,
-                conn,
                 claimed.job_id,
                 self.config.s3_ready_queue_name,
                 message.msg_id,
@@ -623,7 +671,10 @@ class S3ReadyWorker:
             with LeaseMaintainer(self.config, claimed.job_id) as lease:
                 deadline = JobDeadline("s3_ready", self.config.s3_ready_job_timeout_seconds)
                 deadline.check()
-                snapshot = load_s3_ready_snapshot(conn, claimed.job_id)
+                snapshot = load_s3_ready_snapshot_with_short_connection(
+                    self.config,
+                    claimed.job_id,
+                )
                 if not snapshot.processed_manifest_local_uri:
                     raise RuntimeError("LOCAL_MANIFEST_MISSING")
                 manifest_path = Path(snapshot.processed_manifest_local_uri)
@@ -651,7 +702,6 @@ class S3ReadyWorker:
 
                 ok = complete_s3_ready_check_and_archive_with_retry(
                     self.config,
-                    conn,
                     claimed.job_id,
                     claimed.document_id,
                     claimed.document_version,
@@ -670,7 +720,6 @@ class S3ReadyWorker:
             retryable = is_s3_ready_failure_retryable(exc)
             fail_job_and_archive_current_message(
                 self.config,
-                conn,
                 claimed.job_id,
                 self.config.s3_ready_queue_name,
                 message.msg_id,

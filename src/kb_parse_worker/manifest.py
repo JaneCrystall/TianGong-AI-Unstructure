@@ -19,12 +19,15 @@ class ArtifactInfo:
     jsonl_name: str
     pkl_name: str
     txt_name: str | None
+    parser_json_name: str | None
     jsonl_sha256: str
     pkl_sha256: str
     txt_sha256: str | None
+    parser_json_sha256: str | None
     jsonl_size_bytes: int
     pkl_size_bytes: int
     txt_size_bytes: int | None
+    parser_json_size_bytes: int | None
     manifest_hash: str
     manifest: dict[str, Any]
 
@@ -44,6 +47,7 @@ def build_manifest(
     jsonl_path: Path,
     pkl_path: Path,
     txt_path: Path | None,
+    parser_json_path: Path | None,
     parser_profile: str,
     parser_version: str,
     embedding: dict[str, Any] | None = None,
@@ -66,6 +70,10 @@ def build_manifest(
         artifacts["full_text_txt"] = txt_path.name
         sha256["full_text_txt"] = file_sha256(txt_path)
         size_bytes["full_text_txt"] = txt_path.stat().st_size
+    if parser_json_path is not None:
+        artifacts["parser_result_json"] = parser_json_path.name
+        sha256["parser_result_json"] = file_sha256(parser_json_path)
+        size_bytes["parser_result_json"] = parser_json_path.stat().st_size
 
     manifest = {
         "document_id": snapshot.document_id,
@@ -108,12 +116,23 @@ def load_artifact_info(manifest_path: Path, manifest_hash: str | None = None) ->
         jsonl_name=str(artifacts["chunks_jsonl"]),
         pkl_name=str(artifacts["chunks_pkl"]),
         txt_name=str(artifacts["full_text_txt"]) if artifacts.get("full_text_txt") else None,
+        parser_json_name=(
+            str(artifacts["parser_result_json"]) if artifacts.get("parser_result_json") else None
+        ),
         jsonl_sha256=str(sha256["chunks_jsonl"]),
         pkl_sha256=str(sha256["chunks_pkl"]),
         txt_sha256=str(sha256["full_text_txt"]) if sha256.get("full_text_txt") else None,
+        parser_json_sha256=(
+            str(sha256["parser_result_json"]) if sha256.get("parser_result_json") else None
+        ),
         jsonl_size_bytes=int(size_bytes["chunks_jsonl"]),
         pkl_size_bytes=int(size_bytes["chunks_pkl"]),
         txt_size_bytes=int(size_bytes["full_text_txt"]) if size_bytes.get("full_text_txt") is not None else None,
+        parser_json_size_bytes=(
+            int(size_bytes["parser_result_json"])
+            if size_bytes.get("parser_result_json") is not None
+            else None
+        ),
         manifest_hash=manifest_hash or file_sha256(manifest_path),
         manifest=manifest,
     )

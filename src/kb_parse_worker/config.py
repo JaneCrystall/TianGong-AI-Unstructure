@@ -32,6 +32,23 @@ def _bool_env(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _optional_str_env(name: str) -> str | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _infer_two_stage_base_url(api_url: str) -> str:
+    trimmed = api_url.rstrip("/")
+    for suffix in ("/mineru_with_images", "/mineru", "/two_stage/task"):
+        if trimmed.endswith(suffix):
+            trimmed = trimmed[: -len(suffix)]
+            break
+    return trimmed.rstrip("/")
+
+
 def database_url_from_env() -> str:
     for name in ("DATABASE_URL", "SUPABASE_DB_URL", "KB_DATABASE_URL"):
         value = os.getenv(name)
@@ -77,6 +94,16 @@ class WorkerConfig:
     nas_processed_root: Path
     unstructure_serve_url: str
     unstructure_serve_bearer_token: str
+    use_two_stage_parser: bool
+    unstructure_serve_two_stage_base_url: str
+    two_stage_submit_timeout_seconds: int
+    two_stage_status_timeout_seconds: int
+    two_stage_poll_interval_seconds: int
+    two_stage_priority: str
+    two_stage_chunk_type: bool
+    two_stage_provider: str | None
+    two_stage_model: str | None
+    two_stage_prompt: str | None
     parser_profile: str
     parser_version: str
     s3_ready_mode: str
@@ -90,6 +117,7 @@ class WorkerConfig:
     embedding_api_key: str
     embedding_dimensions: int
     embedding_batch_size: int
+    embedding_chunk_max_tokens: int
     embedding_timeout_seconds: int
     parse_job_timeout_seconds: int
     s3_ready_job_timeout_seconds: int
@@ -125,6 +153,25 @@ class WorkerConfig:
             nas_processed_root=Path(nas_processed_root),
             unstructure_serve_url=unstructure_url,
             unstructure_serve_bearer_token=token,
+            use_two_stage_parser=_bool_env("KB_PARSE_USE_TWO_STAGE", False),
+            unstructure_serve_two_stage_base_url=os.getenv(
+                "UNSTRUCTURE_SERVE_TWO_STAGE_BASE_URL",
+                _infer_two_stage_base_url(unstructure_url),
+            ).rstrip("/"),
+            two_stage_submit_timeout_seconds=_positive_int_env(
+                "KB_PARSE_TWO_STAGE_SUBMIT_TIMEOUT_SECONDS", 120
+            ),
+            two_stage_status_timeout_seconds=_positive_int_env(
+                "KB_PARSE_TWO_STAGE_STATUS_TIMEOUT_SECONDS", 30
+            ),
+            two_stage_poll_interval_seconds=_positive_int_env(
+                "KB_PARSE_TWO_STAGE_POLL_INTERVAL_SECONDS", 3
+            ),
+            two_stage_priority=os.getenv("KB_PARSE_TWO_STAGE_PRIORITY", "normal"),
+            two_stage_chunk_type=_bool_env("KB_PARSE_TWO_STAGE_CHUNK_TYPE", True),
+            two_stage_provider=_optional_str_env("KB_PARSE_TWO_STAGE_PROVIDER"),
+            two_stage_model=_optional_str_env("KB_PARSE_TWO_STAGE_MODEL"),
+            two_stage_prompt=_optional_str_env("KB_PARSE_TWO_STAGE_PROMPT"),
             parser_profile=os.getenv("KB_PARSE_PARSER_PROFILE", "mineru_with_images"),
             parser_version=os.getenv("KB_PARSE_PARSER_VERSION", "unstructure-serve"),
             s3_ready_mode=os.getenv("KB_PARSE_S3_READY_MODE", "check"),
@@ -140,6 +187,7 @@ class WorkerConfig:
             embedding_api_key=os.getenv("KB_EMBEDDING_API_KEY", "EMPTY"),
             embedding_dimensions=_positive_int_env("KB_EMBEDDING_DIMENSIONS", 1536),
             embedding_batch_size=_positive_int_env("KB_EMBEDDING_BATCH_SIZE", 32),
+            embedding_chunk_max_tokens=_positive_int_env("KB_EMBEDDING_CHUNK_MAX_TOKENS", 8000),
             embedding_timeout_seconds=_positive_int_env("KB_EMBEDDING_TIMEOUT_SECONDS", 600),
             parse_job_timeout_seconds=_positive_int_env("KB_PARSE_JOB_TIMEOUT_SECONDS", 7200),
             s3_ready_job_timeout_seconds=_positive_int_env(

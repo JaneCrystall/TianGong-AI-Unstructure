@@ -12,8 +12,8 @@ checkPaths:
   - requirements.txt
   - src/**
   - docker/**
-lastReviewedAt: 2026-05-16
-lastReviewedCommit: 16836b132b4eb369a474bb570262cfb0a093addc
+lastReviewedAt: 2026-05-17
+lastReviewedCommit: 1a689ec9260599e88a35283e614364c82de5e44f
 ---
 
 # Unstructure Development Runbook
@@ -123,18 +123,41 @@ Current workspace worker deployment points `UNSTRUCTURE_SERVE_URL` at:
 UNSTRUCTURE_SERVE_URL=http://192.168.1.140:7770/mineru_with_images
 ```
 
-The parse worker calls Unstructure-Serve with `return_txt=true`. It uses the
-returned `result` JSON for chunk embeddings and pickle generation, drops any
-returned chunk whose `text` is empty before embedding, and writes the returned
-whole-document `txt` payload as `{artifact_uuid}.txt` beside
-`{artifact_uuid}.pkl`.
+The parse worker can keep using that synchronous endpoint, or switch to
+Unstructure-Serve's internal two-stage Celery pipeline by setting:
 
-After MinerU returns chunks, the parse worker calls the OpenAI-compatible
-embedding endpoint before writing artifacts. The pickle artifact stores each
-remaining chunk with an `embedding` key, while the JSONL artifact omits
-embeddings to keep line-oriented inspection light. The worker requests
-provider-default Qwen3-Embedding-8B vectors, then locally truncates and
-normalizes them to the configured dimension:
+```text
+KB_PARSE_USE_TWO_STAGE=true
+UNSTRUCTURE_SERVE_TWO_STAGE_BASE_URL=http://192.168.1.140:7770
+KB_PARSE_TWO_STAGE_SUBMIT_TIMEOUT_SECONDS=120
+KB_PARSE_TWO_STAGE_STATUS_TIMEOUT_SECONDS=30
+KB_PARSE_TWO_STAGE_POLL_INTERVAL_SECONDS=3
+KB_PARSE_TWO_STAGE_PRIORITY=normal
+KB_PARSE_TWO_STAGE_CHUNK_TYPE=true
+```
+
+If `UNSTRUCTURE_SERVE_TWO_STAGE_BASE_URL` is omitted, the worker derives it from
+`UNSTRUCTURE_SERVE_URL` by removing a trailing `/mineru_with_images`, `/mineru`,
+or `/two_stage/task`. `UNSTRUCTURE_SERVE_BEARER_TOKEN` is reused for both
+submit and status polling. Optional `KB_PARSE_TWO_STAGE_PROVIDER`,
+`KB_PARSE_TWO_STAGE_MODEL`, and `KB_PARSE_TWO_STAGE_PROMPT` can override the
+parser-side vision defaults; leave them unset for normal deployment.
+
+Both modes request `return_txt=true`. The worker uses the returned `result` JSON
+for chunk embeddings and pickle generation, drops any returned chunk whose
+`text` is empty before embedding, and writes the returned whole-document `txt`
+payload as `{artifact_uuid}.txt` beside `{artifact_uuid}.pkl`.
+
+After MinerU returns chunks, the parse worker writes the raw parser chunks to a
+JSON artifact, splits chunks above the embedding token cap, and then calls the
+OpenAI-compatible embedding endpoint before writing the pickle artifact. Text
+chunks split on sentence or newline boundaries, table-like HTML chunks split on
+`<tr>` row boundaries, and oversized single sentences or rows fall back to a
+hard token split. The pickle artifact stores each embedding child chunk with an
+`embedding` key and parent metadata, while the JSONL artifact omits embeddings
+to keep line-oriented inspection light. The worker requests provider-default
+Qwen3-Embedding-8B vectors, then locally truncates and normalizes them to the
+configured dimension:
 
 ```text
 KB_EMBEDDING_BASE_URL=http://192.168.1.140:7710/v1
@@ -142,6 +165,7 @@ KB_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-8B
 KB_EMBEDDING_API_KEY=EMPTY
 KB_EMBEDDING_DIMENSIONS=1536
 KB_EMBEDDING_BATCH_SIZE=32
+KB_EMBEDDING_CHUNK_MAX_TOKENS=8000
 KB_EMBEDDING_TIMEOUT_SECONDS=600
 ```
 

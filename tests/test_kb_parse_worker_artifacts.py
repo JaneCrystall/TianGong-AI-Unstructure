@@ -109,6 +109,74 @@ class KbParseWorkerArtifactTests(unittest.TestCase):
                         "token",
                     )
 
+    def test_parse_with_unstructure_serve_two_stage_polls_success(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as raw_file:
+            raw_file.write(b"%PDF")
+            raw_file.flush()
+            submit_response = self.FakeResponse({"task_id": "task-1", "state": "PENDING"})
+            pending_response = self.FakeResponse({"task_id": "task-1", "state": "STARTED"})
+            success_response = self.FakeResponse(
+                {
+                    "task_id": "task-1",
+                    "state": "SUCCESS",
+                    "result": {
+                        "result": [{"text": "chunk"}, {"text": ""}],
+                        "txt": "whole document text",
+                    },
+                }
+            )
+
+            with (
+                patch(
+                    "src.kb_parse_worker.parser_adapter.requests.post",
+                    return_value=submit_response,
+                ) as post,
+                patch(
+                    "src.kb_parse_worker.parser_adapter.requests.get",
+                    side_effect=[pending_response, success_response],
+                ) as get,
+                patch("src.kb_parse_worker.parser_adapter.time.sleep") as sleep,
+            ):
+                parsed = parse_with_unstructure_serve(
+                    Path(raw_file.name),
+                    "https://parser.test/mineru_with_images",
+                    "token",
+                    use_two_stage=True,
+                    two_stage_submit_timeout_seconds=10,
+                    two_stage_status_timeout_seconds=10,
+                    two_stage_poll_interval_seconds=1,
+                    two_stage_priority="urgent",
+                    two_stage_chunk_type=True,
+                    two_stage_provider="vllm",
+                    two_stage_model="model",
+                    two_stage_prompt="prompt",
+                )
+
+            self.assertEqual(parsed.result, [{"text": "chunk"}])
+            self.assertEqual(parsed.txt, "whole document text")
+            self.assertEqual(parsed.original_chunk_count, 2)
+            self.assertEqual(parsed.dropped_empty_text_count, 1)
+            self.assertEqual(post.call_args.args[0], "https://parser.test/two_stage/task")
+            self.assertEqual(
+                post.call_args.kwargs["data"],
+                {
+                    "return_txt": "true",
+                    "chunk_type": "true",
+                    "priority": "urgent",
+                    "provider": "vllm",
+                    "model": "model",
+                    "prompt": "prompt",
+                },
+            )
+            self.assertEqual(
+                [call.args[0] for call in get.call_args_list],
+                [
+                    "https://parser.test/two_stage/task/task-1",
+                    "https://parser.test/two_stage/task/task-1",
+                ],
+            )
+            sleep.assert_called_once()
+
     def test_write_processed_artifacts_writes_full_text_txt(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             final_dir, artifact_info = write_processed_artifacts(
@@ -129,6 +197,38 @@ class KbParseWorkerArtifactTests(unittest.TestCase):
             self.assertEqual((final_dir / txt_name).read_text(encoding="utf-8"), "whole document text")
             self.assertEqual(artifact_info.txt_name, txt_name)
             self.assertEqual(manifest["size_bytes"]["full_text_txt"], len("whole document text"))
+
+    def test_write_processed_artifacts_writes_parser_result_json(self) -> None:
+        parser_result = [{"text": "raw chunk", "page_number": 1}]
+        embedded_result = [
+            {
+                "text": "raw chunk",
+                "page_number": 1,
+                "type": "text",
+                "embedding": [0.1, 0.2],
+            }
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            final_dir, artifact_info = write_processed_artifacts(
+                embedded_result,
+                snapshot(),
+                Path(temp_dir),
+                "profile",
+                "version",
+                {"model": "embedding"},
+                "whole document text",
+                parser_result,
+            )
+
+            manifest = json.loads((final_dir / "manifest.json").read_text(encoding="utf-8"))
+            parser_json_name = manifest["artifacts"]["parser_result_json"]
+
+            self.assertEqual(parser_json_name, f"{manifest['artifact_uuid']}.json")
+            self.assertEqual(
+                json.loads((final_dir / parser_json_name).read_text(encoding="utf-8")),
+                parser_result,
+            )
+            self.assertEqual(artifact_info.parser_json_name, parser_json_name)
 
 
 if __name__ == "__main__":
