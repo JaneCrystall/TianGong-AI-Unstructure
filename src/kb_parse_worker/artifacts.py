@@ -33,6 +33,7 @@ def write_processed_artifacts(
     parser_version: str,
     embedding: dict[str, Any] | None = None,
     full_text: str | None = None,
+    parser_result: list[Any] | None = None,
 ) -> tuple[Path, ArtifactInfo]:
     if not result:
         raise ValueError("EMPTY_RESULT")
@@ -48,6 +49,12 @@ def write_processed_artifacts(
     jsonl_path = tmp_dir / f"{artifact_uuid}.jsonl"
     pkl_path = tmp_dir / f"{artifact_uuid}.pkl"
     txt_path = tmp_dir / f"{artifact_uuid}.txt" if full_text is not None else None
+    parser_json_path = tmp_dir / f"{artifact_uuid}.json" if parser_result is not None else None
+    if parser_json_path is not None:
+        parser_json_path.write_text(
+            json.dumps(parser_result, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
     with jsonl_path.open("w", encoding="utf-8") as handle:
         for item in result:
             if isinstance(item, dict) and "embedding" in item:
@@ -66,6 +73,10 @@ def write_processed_artifacts(
         pickle.load(handle)
     if jsonl_path.stat().st_size <= 0 or pkl_path.stat().st_size <= 0:
         raise RuntimeError("ARTIFACT_VALIDATE_FAILED: empty artifact file")
+    if parser_json_path is not None:
+        parser_payload = json.loads(parser_json_path.read_text(encoding="utf-8"))
+        if not isinstance(parser_payload, list):
+            raise RuntimeError("ARTIFACT_VALIDATE_FAILED: parser json is not a list")
 
     manifest, _ = build_manifest(
         snapshot=snapshot,
@@ -74,6 +85,7 @@ def write_processed_artifacts(
         jsonl_path=jsonl_path,
         pkl_path=pkl_path,
         txt_path=txt_path,
+        parser_json_path=parser_json_path,
         parser_profile=parser_profile,
         parser_version=parser_version,
         embedding=embedding,
@@ -89,12 +101,15 @@ def write_processed_artifacts(
         jsonl_name=jsonl_path.name,
         pkl_name=pkl_path.name,
         txt_name=txt_path.name if txt_path is not None else None,
+        parser_json_name=parser_json_path.name if parser_json_path is not None else None,
         jsonl_sha256=manifest["sha256"]["chunks_jsonl"],
         pkl_sha256=manifest["sha256"]["chunks_pkl"],
         txt_sha256=manifest["sha256"].get("full_text_txt"),
+        parser_json_sha256=manifest["sha256"].get("parser_result_json"),
         jsonl_size_bytes=manifest["size_bytes"]["chunks_jsonl"],
         pkl_size_bytes=manifest["size_bytes"]["chunks_pkl"],
         txt_size_bytes=manifest["size_bytes"].get("full_text_txt"),
+        parser_json_size_bytes=manifest["size_bytes"].get("parser_result_json"),
         manifest_hash=manifest_hash,
         manifest=manifest,
     )

@@ -11,8 +11,8 @@ checkPaths:
   - src/**
   - docker/**
   - requirements.txt
-lastReviewedAt: 2026-05-16
-lastReviewedCommit: 16836b132b4eb369a474bb570262cfb0a093addc
+lastReviewedAt: 2026-05-17
+lastReviewedCommit: 1a689ec9260599e88a35283e614364c82de5e44f
 ---
 
 # Unstructure Architecture
@@ -29,9 +29,12 @@ Workflows are organized by source domain under `src/**`.
   source-domain processing scripts.
 - `src/kb_parse_worker/**`: KB F03 parse and S3-ready workers. The parse
   worker consumes `kb_parse_queue`, claims jobs through the KB control plane,
-  calls Unstructure-Serve, publishes processed artifacts to NAS, and enqueues
-  the S3-ready check. The S3-ready worker consumes `kb_s3_ready_queue` and
-  marks processed artifacts ready after S3 verification.
+  calls Unstructure-Serve either through the legacy synchronous
+  `/mineru_with_images` endpoint or, when `KB_PARSE_USE_TWO_STAGE=true`,
+  submits `/two_stage/task` and polls `/two_stage/task/{task_id}` for the same
+  `result`/`txt` payload contract. It publishes processed artifacts to NAS and
+  enqueues the S3-ready check. The S3-ready worker consumes
+  `kb_s3_ready_queue` and marks processed artifacts ready after S3 verification.
 - `ecosystem.kb_parse_worker.json`: PM2 process definitions for the KB parse
   worker and S3-ready worker.
 - `src/journals/**`: journal workflows; also read `src/journals/AGENTS.md`.
@@ -57,13 +60,16 @@ the referenced files still exist.
   `jsonl`/`pkl`/`txt`/`manifest.json` artifacts under the configured NAS
   processed root using a `_pickle` suffixed path derived from the collection
   storage path, and calls `complete_parse_local_ready_and_enqueue_s3_check(...)`.
-  The worker requests `return_txt=true` from Unstructure-Serve, drops parser
-  chunks whose `text` is empty before embedding, and writes the returned
-  whole-document text as `{artifact_uuid}.txt` beside the pickle artifact.
-  Before artifact writes, the worker embeds every remaining chunk `text` field
-  through the OpenAI-compatible Qwen3-Embedding-8B endpoint, locally truncates
-  and normalizes vectors to 1536 dimensions, stores vectors in the pickle chunks
-  under `embedding`, and excludes `embedding` from the JSONL artifact.
+  The worker requests `return_txt=true` from Unstructure-Serve in both sync and
+  two-stage modes, drops parser chunks whose `text` is empty before embedding,
+  and writes the returned whole-document text as `{artifact_uuid}.txt` beside
+  the pickle artifact.
+  Before artifact writes, the worker stores the parser result as a JSON artifact,
+  splits chunks above the embedding token cap into child chunks, embeds every
+  child chunk `text` field through the OpenAI-compatible Qwen3-Embedding-8B
+  endpoint, locally truncates and normalizes vectors to 1536 dimensions, stores
+  vectors in the pickle chunks under `embedding`, and excludes `embedding` from
+  the JSONL artifact.
   That RPC completes the parse job, leaves the document in `s3_sync_pending`,
   and enqueues a durable `s3_ready` job. The parse worker treats that final
   local-ready RPC plus parse-message archive as one finalization step. A parse
