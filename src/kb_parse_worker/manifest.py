@@ -16,15 +16,15 @@ from .snapshot import ParseSnapshot
 class ArtifactInfo:
     artifact_uuid: str
     chunk_count: int
-    jsonl_name: str
+    jsonl_name: str | None
     pkl_name: str
     txt_name: str | None
     parser_json_name: str | None
-    jsonl_sha256: str
+    jsonl_sha256: str | None
     pkl_sha256: str
     txt_sha256: str | None
     parser_json_sha256: str | None
-    jsonl_size_bytes: int
+    jsonl_size_bytes: int | None
     pkl_size_bytes: int
     txt_size_bytes: int | None
     parser_json_size_bytes: int | None
@@ -44,7 +44,6 @@ def build_manifest(
     snapshot: ParseSnapshot,
     artifact_uuid: str,
     chunk_count: int,
-    jsonl_path: Path,
     pkl_path: Path,
     txt_path: Path | None,
     parser_json_path: Path | None,
@@ -52,18 +51,14 @@ def build_manifest(
     parser_version: str,
     embedding: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str]:
-    jsonl_name = jsonl_path.name
     pkl_name = pkl_path.name
     artifacts = {
-        "chunks_jsonl": jsonl_name,
         "chunks_pkl": pkl_name,
     }
     sha256 = {
-        "chunks_jsonl": file_sha256(jsonl_path),
         "chunks_pkl": file_sha256(pkl_path),
     }
     size_bytes = {
-        "chunks_jsonl": jsonl_path.stat().st_size,
         "chunks_pkl": pkl_path.stat().st_size,
     }
     if txt_path is not None:
@@ -113,19 +108,21 @@ def load_artifact_info(manifest_path: Path, manifest_hash: str | None = None) ->
     return ArtifactInfo(
         artifact_uuid=str(manifest["artifact_uuid"]),
         chunk_count=int(manifest["chunk_count"]),
-        jsonl_name=str(artifacts["chunks_jsonl"]),
+        jsonl_name=str(artifacts["chunks_jsonl"]) if artifacts.get("chunks_jsonl") else None,
         pkl_name=str(artifacts["chunks_pkl"]),
         txt_name=str(artifacts["full_text_txt"]) if artifacts.get("full_text_txt") else None,
         parser_json_name=(
             str(artifacts["parser_result_json"]) if artifacts.get("parser_result_json") else None
         ),
-        jsonl_sha256=str(sha256["chunks_jsonl"]),
+        jsonl_sha256=str(sha256["chunks_jsonl"]) if sha256.get("chunks_jsonl") else None,
         pkl_sha256=str(sha256["chunks_pkl"]),
         txt_sha256=str(sha256["full_text_txt"]) if sha256.get("full_text_txt") else None,
         parser_json_sha256=(
             str(sha256["parser_result_json"]) if sha256.get("parser_result_json") else None
         ),
-        jsonl_size_bytes=int(size_bytes["chunks_jsonl"]),
+        jsonl_size_bytes=(
+            int(size_bytes["chunks_jsonl"]) if size_bytes.get("chunks_jsonl") is not None else None
+        ),
         pkl_size_bytes=int(size_bytes["chunks_pkl"]),
         txt_size_bytes=int(size_bytes["full_text_txt"]) if size_bytes.get("full_text_txt") is not None else None,
         parser_json_size_bytes=(
