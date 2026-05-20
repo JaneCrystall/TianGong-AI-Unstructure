@@ -199,12 +199,12 @@ class KbParseWorkerArtifactTests(unittest.TestCase):
             self.assertEqual(manifest["size_bytes"]["full_text_txt"], len("whole document text"))
 
     def test_write_processed_artifacts_writes_parser_result_json(self) -> None:
-        parser_result = [{"text": "raw chunk", "page_number": 1}]
+        parser_result = [{"text": "raw chunk", "page_number": 1, "type": None}]
         embedded_result = [
             {
                 "text": "raw chunk",
                 "page_number": 1,
-                "type": "text",
+                "type": None,
                 "embedding": [0.1, 0.2],
             }
         ]
@@ -224,10 +224,18 @@ class KbParseWorkerArtifactTests(unittest.TestCase):
             parser_json_name = manifest["artifacts"]["parser_result_json"]
 
             self.assertEqual(parser_json_name, f"{manifest['artifact_uuid']}.json")
+            self.assertNotIn("chunks_jsonl", manifest["artifacts"])
+            self.assertFalse(list(final_dir.glob("*.jsonl")))
             self.assertEqual(
                 json.loads((final_dir / parser_json_name).read_text(encoding="utf-8")),
-                parser_result,
+                [{"text": "raw chunk", "page_number": 1}],
             )
+            pkl_name = manifest["artifacts"]["chunks_pkl"]
+            import pickle
+
+            with (final_dir / pkl_name).open("rb") as handle:
+                pkl_payload = pickle.load(handle)
+            self.assertNotIn("type", pkl_payload[0])
             self.assertEqual(artifact_info.parser_json_name, parser_json_name)
 
 

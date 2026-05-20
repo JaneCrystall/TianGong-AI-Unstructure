@@ -12,8 +12,8 @@ checkPaths:
   - requirements.txt
   - src/**
   - docker/**
-lastReviewedAt: 2026-05-17
-lastReviewedCommit: 1a689ec9260599e88a35283e614364c82de5e44f
+lastReviewedAt: 2026-05-20
+lastReviewedCommit: eda42e5c0a485212b71a8aefc808574fa0bf013a
 ---
 
 # Unstructure Development Runbook
@@ -154,8 +154,8 @@ OpenAI-compatible embedding endpoint before writing the pickle artifact. Text
 chunks split on sentence or newline boundaries, table-like HTML chunks split on
 `<tr>` row boundaries, and oversized single sentences or rows fall back to a
 hard token split. The pickle artifact stores each embedding child chunk with an
-`embedding` key and parent metadata, while the JSONL artifact omits embeddings
-to keep line-oriented inspection light. The worker requests provider-default
+`embedding` key. Parser chunks that have no type omit the `type` key instead of
+writing `type: null`. The worker requests provider-default
 Qwen3-Embedding-8B vectors, then locally truncates and normalizes them to the
 configured dimension:
 
@@ -193,7 +193,7 @@ For example, collection path `/course/thu_humanities` resolves raw files under
 
 The workers do not upload artifacts to S3 directly. The parse worker writes raw
 inputs and processed artifacts to NAS paths, including the manifest-declared
-JSONL, pickle, and optional full-text TXT artifacts, calls
+parser JSON, pickle, and optional full-text TXT artifacts, calls
 `complete_parse_local_ready_and_enqueue_s3_check(...)`, archives the parse queue
 message, and exits without waiting for NAS-to-S3 sync. The local-ready RPC and
 message archive, S3-ready completion RPC and message archive, and `fail_job_v2`

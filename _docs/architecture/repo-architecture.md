@@ -11,8 +11,8 @@ checkPaths:
   - src/**
   - docker/**
   - requirements.txt
-lastReviewedAt: 2026-05-17
-lastReviewedCommit: 1a689ec9260599e88a35283e614364c82de5e44f
+lastReviewedAt: 2026-05-20
+lastReviewedCommit: eda42e5c0a485212b71a8aefc808574fa0bf013a
 ---
 
 # Unstructure Architecture
@@ -57,7 +57,7 @@ the referenced files still exist.
 - The KB parse worker reads raw document locations from `kb_documents.raw_uri`,
   requires raw files to live under the collection-derived storage path using
   the renamed canonical filename `{document_id}{file_ext}`, writes processed
-  `jsonl`/`pkl`/`txt`/`manifest.json` artifacts under the configured NAS
+  `json`/`pkl`/`txt`/`manifest.json` artifacts under the configured NAS
   processed root using a `_pickle` suffixed path derived from the collection
   storage path, and calls `complete_parse_local_ready_and_enqueue_s3_check(...)`.
   The worker requests `return_txt=true` from Unstructure-Serve in both sync and
@@ -67,9 +67,8 @@ the referenced files still exist.
   Before artifact writes, the worker stores the parser result as a JSON artifact,
   splits chunks above the embedding token cap into child chunks, embeds every
   child chunk `text` field through the OpenAI-compatible Qwen3-Embedding-8B
-  endpoint, locally truncates and normalizes vectors to 1536 dimensions, stores
-  vectors in the pickle chunks under `embedding`, and excludes `embedding` from
-  the JSONL artifact.
+  endpoint, locally truncates and normalizes vectors to 1536 dimensions, and
+  stores vectors in the pickle chunks under `embedding`.
   That RPC completes the parse job, leaves the document in `s3_sync_pending`,
   and enqueues a durable `s3_ready` job. The parse worker treats that final
   local-ready RPC plus parse-message archive as one finalization step. A parse
@@ -77,7 +76,7 @@ the referenced files still exist.
   processed artifacts already exist on NAS but the final DB handoff did not
   commit; it validates the local manifest identity and replays the local-ready
   DB transition without re-running document parsing. A
-  separate S3-ready worker then verifies the processed manifest/jsonl/pkl/txt
+  separate S3-ready worker then verifies the processed manifest/json/pkl/txt
   objects after NAS-to-S3 sync and calls `complete_s3_ready_check(...)` to mark
   `processed_s3_ready`. Final DB transitions and failure writes retry transient
   Postgres connection failures with short reconnecting backoff. PM2 keeps

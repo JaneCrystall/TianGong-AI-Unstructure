@@ -7,6 +7,7 @@ import os
 import pickle
 import shutil
 import uuid
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,17 @@ def _safe_replace_dir(src: Path, dst: Path) -> None:
         shutil.rmtree(backup)
 
 
+def _strip_null_type(value: Any) -> Any:
+    cleaned = deepcopy(value)
+    if isinstance(cleaned, dict) and cleaned.get("type") is None:
+        cleaned.pop("type", None)
+    return cleaned
+
+
+def _strip_null_type_list(items: list[Any]) -> list[Any]:
+    return [_strip_null_type(item) for item in items]
+
+
 def write_processed_artifacts(
     result: list[Any],
     snapshot: ParseSnapshot,
@@ -37,6 +49,9 @@ def write_processed_artifacts(
 ) -> tuple[Path, ArtifactInfo]:
     if not result:
         raise ValueError("EMPTY_RESULT")
+    result = _strip_null_type_list(result)
+    if parser_result is not None:
+        parser_result = _strip_null_type_list(parser_result)
 
     artifact_uuid = str(uuid.uuid4())
     collection_root = nas_processed_root / snapshot.processed_storage_path
@@ -46,7 +61,6 @@ def write_processed_artifacts(
         shutil.rmtree(tmp_dir)
     tmp_dir.mkdir(parents=True, exist_ok=False)
 
-    jsonl_path = tmp_dir / f"{artifact_uuid}.jsonl"
     pkl_path = tmp_dir / f"{artifact_uuid}.pkl"
     txt_path = tmp_dir / f"{artifact_uuid}.txt" if full_text is not None else None
     parser_json_path = tmp_dir / f"{artifact_uuid}.json" if parser_result is not None else None
@@ -55,23 +69,14 @@ def write_processed_artifacts(
             json.dumps(parser_result, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
             encoding="utf-8",
         )
-    with jsonl_path.open("w", encoding="utf-8") as handle:
-        for item in result:
-            if isinstance(item, dict) and "embedding" in item:
-                item = {key: value for key, value in item.items() if key != "embedding"}
-            handle.write(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n")
     with pkl_path.open("wb") as handle:
         pickle.dump(result, handle)
     if txt_path is not None:
         txt_path.write_text(full_text, encoding="utf-8")
 
-    with jsonl_path.open("r", encoding="utf-8") as handle:
-        jsonl_row_count = sum(1 for _ in handle)
-    if jsonl_row_count != len(result):
-        raise RuntimeError("ARTIFACT_VALIDATE_FAILED: jsonl row count mismatch")
     with pkl_path.open("rb") as handle:
         pickle.load(handle)
-    if jsonl_path.stat().st_size <= 0 or pkl_path.stat().st_size <= 0:
+    if pkl_path.stat().st_size <= 0:
         raise RuntimeError("ARTIFACT_VALIDATE_FAILED: empty artifact file")
     if parser_json_path is not None:
         parser_payload = json.loads(parser_json_path.read_text(encoding="utf-8"))
@@ -82,7 +87,6 @@ def write_processed_artifacts(
         snapshot=snapshot,
         artifact_uuid=artifact_uuid,
         chunk_count=len(result),
-        jsonl_path=jsonl_path,
         pkl_path=pkl_path,
         txt_path=txt_path,
         parser_json_path=parser_json_path,
@@ -98,15 +102,15 @@ def write_processed_artifacts(
     info = ArtifactInfo(
         artifact_uuid=artifact_uuid,
         chunk_count=len(result),
-        jsonl_name=jsonl_path.name,
+        jsonl_name=None,
         pkl_name=pkl_path.name,
         txt_name=txt_path.name if txt_path is not None else None,
         parser_json_name=parser_json_path.name if parser_json_path is not None else None,
-        jsonl_sha256=manifest["sha256"]["chunks_jsonl"],
+        jsonl_sha256=None,
         pkl_sha256=manifest["sha256"]["chunks_pkl"],
         txt_sha256=manifest["sha256"].get("full_text_txt"),
         parser_json_sha256=manifest["sha256"].get("parser_result_json"),
-        jsonl_size_bytes=manifest["size_bytes"]["chunks_jsonl"],
+        jsonl_size_bytes=None,
         pkl_size_bytes=manifest["size_bytes"]["chunks_pkl"],
         txt_size_bytes=manifest["size_bytes"].get("full_text_txt"),
         parser_json_size_bytes=manifest["size_bytes"].get("parser_result_json"),
