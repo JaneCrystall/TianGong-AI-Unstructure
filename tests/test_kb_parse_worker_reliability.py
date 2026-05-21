@@ -14,6 +14,7 @@ from src.kb_parse_worker.worker import (
     complete_s3_ready_check_and_archive_with_retry,
     complete_parse_local_ready_and_archive_with_retry,
     fail_job_and_archive_current_message,
+    handle_unclaimed_message,
     is_parse_failure_retryable,
     is_s3_ready_failure_retryable,
 )
@@ -120,132 +121,113 @@ class KbParseWorkerReliabilityTests(unittest.TestCase):
         self.assertTrue(is_s3_ready_failure_retryable(JobTimeout("S3_READY_JOB_TIMEOUT_AFTER_60s")))
 
     def test_parse_terminal_failure_marks_non_retryable_and_archives_dead_job(self) -> None:
-        conn = object()
-        fail_result = control_plane.FailJobResult(
-            job_id="job-1",
-            job_status="dead",
-            document_status="failed",
-        )
+        config = worker_config()
         with (
             patch("src.kb_parse_worker.worker.LeaseMaintainer", NoopLease),
-            patch("src.kb_parse_worker.worker.control_plane.claim_job", return_value=claimed("parse")),
-            patch("src.kb_parse_worker.worker.load_parse_snapshot", side_effect=RuntimeError("EMPTY_RESULT")),
-            patch("src.kb_parse_worker.worker.control_plane.fail_job", return_value=fail_result) as fail_job,
-            patch("src.kb_parse_worker.worker.queue.archive_job_message_by_id", return_value=True) as archive,
+            patch("src.kb_parse_worker.worker.claim_queue_message", return_value=claimed("parse")),
+            patch(
+                "src.kb_parse_worker.worker.load_parse_snapshot_with_short_connection",
+                side_effect=RuntimeError("EMPTY_RESULT"),
+            ),
+            patch(
+                "src.kb_parse_worker.worker.fail_job_and_archive_current_message",
+            ) as fail_job,
             patch("src.kb_parse_worker.worker.LOGGER.exception"),
         ):
-            ParseWorker(worker_config()).process_message(conn, message())
+            ParseWorker(config).process_message(message())
 
         fail_job.assert_called_once()
-        self.assertFalse(fail_job.call_args.args[3])
-        archive.assert_called_once_with(conn, "kb_parse_queue", 1)
+        self.assertEqual(fail_job.call_args.args[1:5], ("job-1", "kb_parse_queue", 1, "worker-1"))
+        self.assertFalse(fail_job.call_args.args[5])
+        self.assertEqual(fail_job.call_args.args[7], "parse")
 
     def test_parse_timeout_marks_retryable_and_archives_current_message(self) -> None:
-        conn = object()
-        fail_result = control_plane.FailJobResult(
-            job_id="job-1",
-            job_status="failed",
-            document_status="parse_queued",
-        )
+        config = worker_config()
         with (
             patch("src.kb_parse_worker.worker.LeaseMaintainer", NoopLease),
-            patch("src.kb_parse_worker.worker.control_plane.claim_job", return_value=claimed("parse")),
+            patch("src.kb_parse_worker.worker.claim_queue_message", return_value=claimed("parse")),
             patch(
-                "src.kb_parse_worker.worker.load_parse_snapshot",
+                "src.kb_parse_worker.worker.load_parse_snapshot_with_short_connection",
                 side_effect=JobTimeout("PARSE_JOB_TIMEOUT_AFTER_60s"),
             ),
-            patch("src.kb_parse_worker.worker.control_plane.fail_job", return_value=fail_result) as fail_job,
-            patch("src.kb_parse_worker.worker.queue.archive_job_message_by_id", return_value=True) as archive,
+            patch(
+                "src.kb_parse_worker.worker.fail_job_and_archive_current_message",
+            ) as fail_job,
             patch("src.kb_parse_worker.worker.LOGGER.exception"),
         ):
-            ParseWorker(worker_config()).process_message(conn, message())
+            ParseWorker(config).process_message(message())
 
         fail_job.assert_called_once()
-        self.assertTrue(fail_job.call_args.args[3])
-        archive.assert_called_once_with(conn, "kb_parse_queue", 1)
+        self.assertTrue(fail_job.call_args.args[5])
+        self.assertEqual(fail_job.call_args.args[7], "parse")
 
     def test_s3_ready_terminal_failure_marks_non_retryable_and_archives_dead_job(self) -> None:
-        conn = object()
-        fail_result = control_plane.FailJobResult(
-            job_id="job-1",
-            job_status="dead",
-            document_status="failed",
-        )
+        config = worker_config()
         with (
             patch("src.kb_parse_worker.worker.LeaseMaintainer", NoopLease),
+            patch("src.kb_parse_worker.worker.claim_queue_message", return_value=claimed("s3_ready")),
             patch(
-                "src.kb_parse_worker.worker.control_plane.claim_job",
-                return_value=claimed("s3_ready"),
-            ),
-            patch(
-                "src.kb_parse_worker.worker.load_s3_ready_snapshot",
+                "src.kb_parse_worker.worker.load_s3_ready_snapshot_with_short_connection",
                 return_value=SimpleNamespace(processed_manifest_local_uri=None),
             ),
-            patch("src.kb_parse_worker.worker.control_plane.fail_job", return_value=fail_result) as fail_job,
-            patch("src.kb_parse_worker.worker.queue.archive_job_message_by_id", return_value=True) as archive,
+            patch(
+                "src.kb_parse_worker.worker.fail_job_and_archive_current_message",
+            ) as fail_job,
             patch("src.kb_parse_worker.worker.LOGGER.exception"),
         ):
-            S3ReadyWorker(worker_config()).process_message(conn, message())
+            S3ReadyWorker(config).process_message(message())
 
         fail_job.assert_called_once()
-        self.assertFalse(fail_job.call_args.args[3])
-        archive.assert_called_once()
+        self.assertEqual(fail_job.call_args.args[1:5], ("job-1", "kb_s3_ready_queue", 1, "worker-1"))
+        self.assertFalse(fail_job.call_args.args[5])
+        self.assertEqual(fail_job.call_args.args[7], "s3_ready")
 
     def test_s3_ready_transient_failure_marks_retryable_and_archives_current_message(self) -> None:
-        conn = object()
-        fail_result = control_plane.FailJobResult(
-            job_id="job-1",
-            job_status="failed",
-            document_status="s3_ready_check_failed",
-        )
+        config = worker_config()
         with (
             patch("src.kb_parse_worker.worker.LeaseMaintainer", NoopLease),
+            patch("src.kb_parse_worker.worker.claim_queue_message", return_value=claimed("s3_ready")),
             patch(
-                "src.kb_parse_worker.worker.control_plane.claim_job",
-                return_value=claimed("s3_ready"),
-            ),
-            patch(
-                "src.kb_parse_worker.worker.load_s3_ready_snapshot",
+                "src.kb_parse_worker.worker.load_s3_ready_snapshot_with_short_connection",
                 side_effect=RuntimeError("S3_NOT_READY_AFTER_TIMEOUT: sync delay"),
             ),
-            patch("src.kb_parse_worker.worker.control_plane.fail_job", return_value=fail_result) as fail_job,
-            patch("src.kb_parse_worker.worker.queue.archive_job_message_by_id", return_value=True) as archive,
+            patch(
+                "src.kb_parse_worker.worker.fail_job_and_archive_current_message",
+            ) as fail_job,
             patch("src.kb_parse_worker.worker.LOGGER.exception"),
         ):
-            S3ReadyWorker(worker_config()).process_message(conn, message())
+            S3ReadyWorker(config).process_message(message())
 
         fail_job.assert_called_once()
-        self.assertTrue(fail_job.call_args.args[3])
-        archive.assert_called_once_with(conn, "kb_s3_ready_queue", 1)
+        self.assertTrue(fail_job.call_args.args[5])
+        self.assertEqual(fail_job.call_args.args[7], "s3_ready")
 
     def test_parse_backoff_not_due_leaves_current_message_when_contract_says_keep(self) -> None:
         conn = object()
-        with (
-            patch(
-                "src.kb_parse_worker.worker.control_plane.claim_job",
-                return_value=claim_disposition("backoff_not_due", False),
-            ),
-            patch("src.kb_parse_worker.worker.queue.archive_job_message_by_id", return_value=True) as archive,
-        ):
-            ParseWorker(worker_config()).process_message(conn, message())
+        with patch("src.kb_parse_worker.worker.queue.archive_job_message_by_id", return_value=True) as archive:
+            handle_unclaimed_message(
+                conn,
+                "kb_parse_queue",
+                message(),
+                claim_disposition("backoff_not_due", False),
+            )
 
         archive.assert_not_called()
 
     def test_parse_backoff_not_due_archives_current_message_when_contract_says_archive(self) -> None:
         conn = object()
-        with (
-            patch(
-                "src.kb_parse_worker.worker.control_plane.claim_job",
-                return_value=claim_disposition("backoff_not_due", True),
-            ),
-            patch("src.kb_parse_worker.worker.queue.archive_job_message_by_id", return_value=True) as archive,
-        ):
-            ParseWorker(worker_config()).process_message(conn, message())
+        with patch("src.kb_parse_worker.worker.queue.archive_job_message_by_id", return_value=True) as archive:
+            handle_unclaimed_message(
+                conn,
+                "kb_parse_queue",
+                message(),
+                claim_disposition("backoff_not_due", True),
+            )
 
         archive.assert_called_once_with(conn, "kb_parse_queue", 1)
 
     def test_parse_finalization_reconnects_and_retries_db_connection_errors(self) -> None:
-        original_conn = FakeConnection("original")
+        first_conn = FakeConnection("first")
         retry_conn = FakeConnection("retry")
         result = control_plane.S3ReadyEnqueueResult(
             parse_job_id="job-1",
@@ -267,14 +249,16 @@ class KbParseWorkerReliabilityTests(unittest.TestCase):
                 "src.kb_parse_worker.worker.control_plane.complete_parse_local_ready_and_enqueue_s3_check",
                 side_effect=complete,
             ),
-            patch("src.kb_parse_worker.worker.control_plane.connect", return_value=retry_conn) as connect,
+            patch(
+                "src.kb_parse_worker.worker.control_plane.connect",
+                side_effect=[first_conn, retry_conn],
+            ) as connect,
             patch("src.kb_parse_worker.worker.archive_current_message", return_value=True) as archive,
             patch("src.kb_parse_worker.worker.time.sleep") as sleep,
             patch("src.kb_parse_worker.worker.LOGGER.warning"),
         ):
             actual = complete_parse_local_ready_and_archive_with_retry(
                 worker_config(),
-                original_conn,
                 "job-1",
                 "00000000-0000-0000-0000-000000000001",
                 1,
@@ -289,13 +273,13 @@ class KbParseWorkerReliabilityTests(unittest.TestCase):
             )
 
         self.assertEqual(actual, result)
-        self.assertEqual(calls, [original_conn, retry_conn])
-        connect.assert_called_once_with("postgresql://test")
+        self.assertEqual(calls, [first_conn, retry_conn])
+        self.assertEqual(connect.call_count, 2)
         sleep.assert_called_once_with(1.0)
         archive.assert_called_once_with(retry_conn, "kb_parse_queue", 1)
 
     def test_parse_finalization_does_not_retry_non_db_errors(self) -> None:
-        original_conn = FakeConnection("original")
+        first_conn = FakeConnection("first")
 
         with (
             patch(
@@ -304,14 +288,13 @@ class KbParseWorkerReliabilityTests(unittest.TestCase):
                     "complete_parse_local_ready_and_enqueue_s3_check returned no row"
                 ),
             ) as complete,
-            patch("src.kb_parse_worker.worker.control_plane.connect") as connect,
+            patch("src.kb_parse_worker.worker.control_plane.connect", return_value=first_conn) as connect,
             patch("src.kb_parse_worker.worker.archive_current_message") as archive,
             patch("src.kb_parse_worker.worker.time.sleep") as sleep,
         ):
             with self.assertRaisesRegex(RuntimeError, "returned no row"):
                 complete_parse_local_ready_and_archive_with_retry(
                     worker_config(),
-                    original_conn,
                     "job-1",
                     "00000000-0000-0000-0000-000000000001",
                     1,
@@ -326,12 +309,12 @@ class KbParseWorkerReliabilityTests(unittest.TestCase):
                 )
 
         complete.assert_called_once()
-        connect.assert_not_called()
+        connect.assert_called_once_with("postgresql://test")
         archive.assert_not_called()
         sleep.assert_not_called()
 
     def test_s3_ready_finalization_reconnects_and_retries_db_connection_errors(self) -> None:
-        original_conn = FakeConnection("original")
+        first_conn = FakeConnection("first")
         retry_conn = FakeConnection("retry")
         calls: list[FakeConnection] = []
 
@@ -346,14 +329,16 @@ class KbParseWorkerReliabilityTests(unittest.TestCase):
                 "src.kb_parse_worker.worker.control_plane.complete_s3_ready_check",
                 side_effect=complete,
             ),
-            patch("src.kb_parse_worker.worker.control_plane.connect", return_value=retry_conn) as connect,
+            patch(
+                "src.kb_parse_worker.worker.control_plane.connect",
+                side_effect=[first_conn, retry_conn],
+            ) as connect,
             patch("src.kb_parse_worker.worker.archive_current_message", return_value=True) as archive,
             patch("src.kb_parse_worker.worker.time.sleep") as sleep,
             patch("src.kb_parse_worker.worker.LOGGER.warning"),
         ):
             ok = complete_s3_ready_check_and_archive_with_retry(
                 worker_config(),
-                original_conn,
                 "job-1",
                 "00000000-0000-0000-0000-000000000001",
                 1,
@@ -367,13 +352,13 @@ class KbParseWorkerReliabilityTests(unittest.TestCase):
             )
 
         self.assertTrue(ok)
-        self.assertEqual(calls, [original_conn, retry_conn])
-        connect.assert_called_once_with("postgresql://test")
+        self.assertEqual(calls, [first_conn, retry_conn])
+        self.assertEqual(connect.call_count, 2)
         sleep.assert_called_once_with(1.0)
         archive.assert_called_once_with(retry_conn, "kb_s3_ready_queue", 1)
 
     def test_fail_job_reconnects_and_retries_db_connection_errors(self) -> None:
-        original_conn = FakeConnection("original")
+        first_conn = FakeConnection("first")
         retry_conn = FakeConnection("retry")
         result = control_plane.FailJobResult(
             job_id="job-1",
@@ -392,14 +377,16 @@ class KbParseWorkerReliabilityTests(unittest.TestCase):
 
         with (
             patch("src.kb_parse_worker.worker.control_plane.fail_job", side_effect=fail),
-            patch("src.kb_parse_worker.worker.control_plane.connect", return_value=retry_conn) as connect,
+            patch(
+                "src.kb_parse_worker.worker.control_plane.connect",
+                side_effect=[first_conn, retry_conn],
+            ) as connect,
             patch("src.kb_parse_worker.worker.archive_current_message", return_value=True) as archive,
             patch("src.kb_parse_worker.worker.time.sleep") as sleep,
             patch("src.kb_parse_worker.worker.LOGGER.warning"),
         ):
             actual = fail_job_and_archive_current_message(
                 worker_config(),
-                original_conn,
                 "job-1",
                 "kb_parse_queue",
                 1,
@@ -410,8 +397,8 @@ class KbParseWorkerReliabilityTests(unittest.TestCase):
             )
 
         self.assertEqual(actual, result)
-        self.assertEqual(calls, [original_conn, retry_conn])
-        connect.assert_called_once_with("postgresql://test")
+        self.assertEqual(calls, [first_conn, retry_conn])
+        self.assertEqual(connect.call_count, 2)
         sleep.assert_called_once_with(1.0)
         archive.assert_called_once_with(retry_conn, "kb_parse_queue", 1)
 
