@@ -1,0 +1,42 @@
+{
+  "apps": [
+    {
+      "name": "kb-parse-submitter",
+      "cwd": ".",
+      "script": ".venv/bin/python",
+      "interpreter": "none",
+      "args": "-m src.kb_parse_worker.cli run --worker parse-submitter --log-level INFO",
+      "watch": false,
+      "autorestart": true,
+      "max_restarts": 10,
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "KB_PARSE_USE_TWO_STAGE": "true",
+        "KB_PARSE_TWO_STAGE_PARSE_QUEUE": "queue_parse_gpu",
+        "KB_PARSE_TWO_STAGE_MAX_PARSE_BACKLOG": "5"
+      },
+      "out_file": "logs/kb-parse-submitter.out.log",
+      "error_file": "logs/kb-parse-submitter.err.log",
+      "merge_logs": true,
+      "time": true
+    },
+    {
+      "name": "kb-parse-finalizer",
+      "cwd": ".",
+      "script": ".venv/bin/python",
+      "interpreter": "none",
+      "args": "-m src.kb_parse_worker.cli run --worker parse-finalizer --log-level INFO",
+      "watch": false,
+      "autorestart": true,
+      "max_restarts": 10,
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "KB_PARSE_USE_TWO_STAGE": "true"
+      },
+      "out_file": "logs/kb-parse-finalizer.out.log",
+      "error_file": "logs/kb-parse-finalizer.err.log",
+      "merge_logs": true,
+      "time": true
+    }
+  ]
+}

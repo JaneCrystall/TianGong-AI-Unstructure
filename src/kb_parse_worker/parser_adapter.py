@@ -30,6 +30,31 @@ class ParsedDocument:
     dropped_empty_text_count: int
 
 
+@dataclass(frozen=True)
+class TwoStageTaskSubmission:
+    task_id: str
+    state: str | None
+    task_url: str
+    status_url: str
+
+
+@dataclass(frozen=True)
+class TwoStageTaskStatus:
+    task_id: str
+    state: str
+    parsed: ParsedDocument | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class TwoStageQueueStatus:
+    queues: dict[str, int]
+    unacked: dict[str, int]
+
+    def backlog(self, queue_name: str) -> int:
+        return int(self.queues.get(queue_name, 0)) + int(self.unacked.get(queue_name, 0))
+
+
 def _has_nonempty_text(item: Any) -> bool:
     if isinstance(item, dict):
         text = item.get("text")
@@ -80,6 +105,111 @@ def _raise_for_parser_status(response: requests.Response) -> None:
         raise ParserError(f"parser http error {response.status_code}: {response.text[:500]}") from exc
 
 
+def submit_two_stage_task(
+    raw_path: Path,
+    base_url: str,
+    bearer_token: str,
+    *,
+    timeout_seconds: int,
+    return_txt: bool,
+    priority: str,
+    chunk_type: bool,
+    provider: str | None,
+    model: str | None,
+    prompt: str | None,
+) -> TwoStageTaskSubmission:
+    headers = {"Authorization": f"Bearer {bearer_token}"}
+    submit_url = f"{base_url.rstrip('/')}/two_stage/task"
+    form_data: dict[str, str] = {
+        "return_txt": "true" if return_txt else "false",
+        "chunk_type": "true" if chunk_type else "false",
+        "priority": priority or "normal",
+    }
+    if provider:
+        form_data["provider"] = provider
+    if model:
+        form_data["model"] = model
+    if prompt:
+        form_data["prompt"] = prompt
+
+    with raw_path.open("rb") as handle:
+        response = requests.post(
+            submit_url,
+            files={"file": (raw_path.name, handle)},
+            data=form_data,
+            headers=headers,
+            timeout=timeout_seconds,
+        )
+    _raise_for_parser_status(response)
+    payload = response.json()
+    task_id = payload.get("task_id")
+    if not isinstance(task_id, str) or not task_id:
+        raise ParserError("parser response missing task_id")
+    return TwoStageTaskSubmission(
+        task_id=task_id,
+        state=payload.get("state") if isinstance(payload.get("state"), str) else None,
+        task_url=submit_url,
+        status_url=f"{submit_url}/{task_id}",
+    )
+
+
+def fetch_two_stage_task_status(
+    base_url: str,
+    bearer_token: str,
+    task_id: str,
+    *,
+    timeout_seconds: int,
+    return_txt: bool,
+) -> TwoStageTaskStatus:
+    status_url = f"{base_url.rstrip('/')}/two_stage/task/{task_id}"
+    response = requests.get(
+        status_url,
+        headers={"Authorization": f"Bearer {bearer_token}"},
+        timeout=timeout_seconds,
+    )
+    _raise_for_parser_status(response)
+    payload = response.json()
+    state = payload.get("state")
+    if not isinstance(state, str) or not state:
+        raise ParserError("parser response missing state")
+    if state == "SUCCESS":
+        result_payload = payload.get("result")
+        if not isinstance(result_payload, dict):
+            raise ParserError("parser response missing result payload")
+        return TwoStageTaskStatus(
+            task_id=task_id,
+            state=state,
+            parsed=_parsed_document_from_payload(result_payload, return_txt),
+        )
+    if state in {"FAILURE", "REVOKED"}:
+        error = payload.get("error") or state
+        return TwoStageTaskStatus(task_id=task_id, state=state, error=str(error))
+    return TwoStageTaskStatus(task_id=task_id, state=state)
+
+
+def fetch_two_stage_queue_status(
+    base_url: str,
+    bearer_token: str,
+    *,
+    timeout_seconds: int,
+) -> TwoStageQueueStatus:
+    response = requests.get(
+        f"{base_url.rstrip('/')}/two_stage/queue_status",
+        headers={"Authorization": f"Bearer {bearer_token}"},
+        timeout=timeout_seconds,
+    )
+    _raise_for_parser_status(response)
+    payload = response.json()
+    queues = payload.get("queues")
+    unacked = payload.get("unacked")
+    if not isinstance(queues, dict) or not isinstance(unacked, dict):
+        raise ParserError("parser queue status response missing queues/unacked")
+    return TwoStageQueueStatus(
+        queues={str(key): int(value) for key, value in queues.items()},
+        unacked={str(key): int(value) for key, value in unacked.items()},
+    )
+
+
 def _parse_with_two_stage(
     raw_path: Path,
     base_url: str,
@@ -99,57 +229,39 @@ def _parse_with_two_stage(
     if timeout_seconds <= 0:
         raise ParserTimeout("parser two-stage timeout before submit")
     deadline = time.monotonic() + timeout_seconds
-    headers = {"Authorization": f"Bearer {bearer_token}"}
-    submit_url = f"{base_url.rstrip('/')}/two_stage/task"
-    status_base_url = submit_url
-    form_data: dict[str, str] = {
-        "return_txt": "true" if return_txt else "false",
-        "chunk_type": "true" if chunk_type else "false",
-        "priority": priority or "normal",
-    }
-    if provider:
-        form_data["provider"] = provider
-    if model:
-        form_data["model"] = model
-    if prompt:
-        form_data["prompt"] = prompt
-
-    with raw_path.open("rb") as handle:
-        response = requests.post(
-            submit_url,
-            files={"file": (raw_path.name, handle)},
-            data=form_data,
-            headers=headers,
-            timeout=min(submit_timeout_seconds, max(1, int(deadline - time.monotonic()))),
-        )
-    _raise_for_parser_status(response)
-    submit_payload = response.json()
-    task_id = submit_payload.get("task_id")
-    if not isinstance(task_id, str) or not task_id:
-        raise ParserError("parser response missing task_id")
+    submission = submit_two_stage_task(
+        raw_path,
+        base_url,
+        bearer_token,
+        timeout_seconds=min(submit_timeout_seconds, max(1, int(deadline - time.monotonic()))),
+        return_txt=return_txt,
+        priority=priority,
+        chunk_type=chunk_type,
+        provider=provider,
+        model=model,
+        prompt=prompt,
+    )
 
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise ParserTimeout(f"parser two-stage task {task_id} timed out")
-        status_response = requests.get(
-            f"{status_base_url}/{task_id}",
-            headers=headers,
-            timeout=min(status_timeout_seconds, max(1, int(remaining))),
+            raise ParserTimeout(f"parser two-stage task {submission.task_id} timed out")
+        status = fetch_two_stage_task_status(
+            base_url,
+            bearer_token,
+            submission.task_id,
+            timeout_seconds=min(status_timeout_seconds, max(1, int(remaining))),
+            return_txt=return_txt,
         )
-        _raise_for_parser_status(status_response)
-        status_payload = status_response.json()
-        state = status_payload.get("state")
-        if state == "SUCCESS":
-            result_payload = status_payload.get("result")
-            if not isinstance(result_payload, dict):
+        if status.state == "SUCCESS":
+            if status.parsed is None:
                 raise ParserError("parser response missing result payload")
-            return _parsed_document_from_payload(result_payload, return_txt)
-        if state in {"FAILURE", "REVOKED"}:
-            error_detail = status_payload.get("error") or state
-            raise ParserTaskFailure(f"parser two-stage task {task_id} failed: {error_detail}")
-        if not isinstance(state, str) or not state:
-            raise ParserError("parser response missing state")
+            return status.parsed
+        if status.state in {"FAILURE", "REVOKED"}:
+            error_detail = status.error or status.state
+            raise ParserTaskFailure(
+                f"parser two-stage task {submission.task_id} failed: {error_detail}"
+            )
         time.sleep(min(poll_interval_seconds, max(0.1, deadline - time.monotonic())))
 
 

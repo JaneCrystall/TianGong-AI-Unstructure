@@ -54,6 +54,28 @@ class FailJobResult:
     retry_wakeup_msg_id: int | None = None
 
 
+@dataclass(frozen=True)
+class TwoStageRegistrationResult:
+    job_id: str
+    document_id: str
+    document_version: int
+    task_id: str
+    document_status: str
+
+
+@dataclass(frozen=True)
+class TwoStageFinalizationClaim:
+    job_id: str
+    document_id: str
+    document_version: int
+    task_id: str
+    task_url: str | None
+    status_url: str | None
+    state: str | None
+    submitted_at: str | None
+    payload_json: dict
+
+
 def connect(database_url: str):
     return psycopg2.connect(database_url)
 
@@ -137,6 +159,99 @@ def fail_job(
             int(row["retry_wakeup_msg_id"]) if row["retry_wakeup_msg_id"] is not None else None
         ),
     )
+
+
+def register_parse_two_stage_task(
+    conn,
+    job_id: str,
+    worker_id: str,
+    task_id: str,
+    task_url: str,
+    status_url: str,
+    queue_name: str,
+    msg_id: int,
+    lock_seconds: int,
+    backlog_json: dict,
+) -> TwoStageRegistrationResult | None:
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            select *
+            from public.register_parse_two_stage_task(
+              %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            """,
+            (
+                job_id,
+                worker_id,
+                task_id,
+                task_url,
+                status_url,
+                queue_name,
+                msg_id,
+                lock_seconds,
+                psycopg2.extras.Json(backlog_json),
+            ),
+        )
+        row = cur.fetchone()
+    conn.commit()
+    if row is None:
+        return None
+    return TwoStageRegistrationResult(
+        job_id=str(row["job_id"]),
+        document_id=str(row["document_id"]),
+        document_version=int(row["document_version"]),
+        task_id=str(row["task_id"]),
+        document_status=str(row["document_status"]),
+    )
+
+
+def claim_parse_two_stage_task(
+    conn,
+    worker_id: str,
+    lock_seconds: int,
+) -> TwoStageFinalizationClaim | None:
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            select *
+            from public.claim_parse_two_stage_task(%s, %s)
+            """,
+            (worker_id, lock_seconds),
+        )
+        row = cur.fetchone()
+    conn.commit()
+    if row is None:
+        return None
+    return TwoStageFinalizationClaim(
+        job_id=str(row["job_id"]),
+        document_id=str(row["document_id"]),
+        document_version=int(row["document_version"]),
+        task_id=str(row["task_id"]),
+        task_url=str(row["task_url"]) if row["task_url"] is not None else None,
+        status_url=str(row["status_url"]) if row["status_url"] is not None else None,
+        state=str(row["state"]) if row["state"] is not None else None,
+        submitted_at=row["submitted_at"].isoformat() if row["submitted_at"] is not None else None,
+        payload_json=dict(row["payload_json"] or {}),
+    )
+
+
+def mark_parse_two_stage_task_state(
+    conn,
+    job_id: str,
+    worker_id: str,
+    state: str,
+    error: str | None,
+    lock_seconds: int,
+) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            "select public.mark_parse_two_stage_task_state(%s, %s, %s, %s, %s)",
+            (job_id, worker_id, state, error[:2000] if error is not None else None, lock_seconds),
+        )
+        row = cur.fetchone()
+    conn.commit()
+    return bool(row and row[0])
 
 
 def mark_parse_local_ready(

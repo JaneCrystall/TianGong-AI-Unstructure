@@ -7,7 +7,7 @@ import logging
 
 from .config import WorkerConfig
 from .reconciler import ParseFinalizationReconciler
-from .worker import ParseWorker, S3ReadyWorker
+from .worker import ParseFinalizerWorker, ParseSubmitterWorker, ParseWorker, S3ReadyWorker
 
 
 def main() -> int:
@@ -15,7 +15,13 @@ def main() -> int:
     parser.add_argument("mode", choices=("once", "run"), help="Run one queue message or poll forever.")
     parser.add_argument(
         "--worker",
-        choices=("parse", "s3-ready", "parse-finalization-reconciler"),
+        choices=(
+            "parse",
+            "parse-submitter",
+            "parse-finalizer",
+            "s3-ready",
+            "parse-finalization-reconciler",
+        ),
         default="parse",
         help="Worker role to run.",
     )
@@ -45,6 +51,10 @@ def main() -> int:
     config = WorkerConfig.from_env()
     if args.worker == "parse":
         worker = ParseWorker(config)
+    elif args.worker == "parse-submitter":
+        worker = ParseSubmitterWorker(config)
+    elif args.worker == "parse-finalizer":
+        worker = ParseFinalizerWorker(config)
     elif args.worker == "s3-ready":
         worker = S3ReadyWorker(config)
     else:

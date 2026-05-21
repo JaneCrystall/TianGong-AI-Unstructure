@@ -104,6 +104,10 @@ class WorkerConfig:
     two_stage_provider: str | None
     two_stage_model: str | None
     two_stage_prompt: str | None
+    two_stage_parse_queue_name: str
+    two_stage_max_parse_backlog: int
+    two_stage_queue_status_timeout_seconds: int
+    two_stage_finalizer_limit: int
     parser_profile: str
     parser_version: str
     s3_ready_mode: str
@@ -172,6 +176,17 @@ class WorkerConfig:
             two_stage_provider=_optional_str_env("KB_PARSE_TWO_STAGE_PROVIDER"),
             two_stage_model=_optional_str_env("KB_PARSE_TWO_STAGE_MODEL"),
             two_stage_prompt=_optional_str_env("KB_PARSE_TWO_STAGE_PROMPT"),
+            two_stage_parse_queue_name=os.getenv(
+                "KB_PARSE_TWO_STAGE_PARSE_QUEUE",
+                "queue_parse_gpu",
+            ),
+            two_stage_max_parse_backlog=_int_env("KB_PARSE_TWO_STAGE_MAX_PARSE_BACKLOG", 5),
+            two_stage_queue_status_timeout_seconds=_positive_int_env(
+                "KB_PARSE_TWO_STAGE_QUEUE_STATUS_TIMEOUT_SECONDS", 10
+            ),
+            two_stage_finalizer_limit=_positive_int_env(
+                "KB_PARSE_TWO_STAGE_FINALIZER_LIMIT", 1
+            ),
             parser_profile=os.getenv("KB_PARSE_PARSER_PROFILE", "mineru_with_images"),
             parser_version=os.getenv("KB_PARSE_PARSER_VERSION", "unstructure-serve"),
             s3_ready_mode=os.getenv("KB_PARSE_S3_READY_MODE", "check"),

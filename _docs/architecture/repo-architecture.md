@@ -33,7 +33,14 @@ Workflows are organized by source domain under `src/**`.
   `/mineru_with_images` endpoint or, when `KB_PARSE_USE_TWO_STAGE=true`,
   submits `/two_stage/task` and polls `/two_stage/task/{task_id}` for the same
   `result`/`txt` payload contract. It publishes processed artifacts to NAS and
-  enqueues the S3-ready check. The S3-ready worker consumes
+  enqueues the S3-ready check. For deployments that want Unstructure-Serve's
+  Celery queue to hold parse backlog, the worker also supports split
+  `parse-submitter` and `parse-finalizer` modes: the submitter applies
+  `/two_stage/queue_status` backpressure, submits `/two_stage/task`, persists
+  the returned task id in the KB job payload, and archives the parse PGMQ
+  message; the finalizer claims those persisted task ids, polls task status,
+  writes processed artifacts, and completes the parse handoff. The S3-ready
+  worker consumes
   `kb_s3_ready_queue` and marks processed artifacts ready after S3 verification.
 - `ecosystem.kb_parse_worker.json`: PM2 process definitions for the KB parse
   worker and S3-ready worker.

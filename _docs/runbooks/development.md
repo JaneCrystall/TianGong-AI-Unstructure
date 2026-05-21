@@ -51,6 +51,8 @@ Run one queue message:
 
 ```bash
 python -m src.kb_parse_worker.cli once
+python -m src.kb_parse_worker.cli once --worker parse-submitter
+python -m src.kb_parse_worker.cli once --worker parse-finalizer
 python -m src.kb_parse_worker.cli once --worker s3-ready
 python -m src.kb_parse_worker.cli once --worker parse-finalization-reconciler --dry-run
 python -m src.kb_parse_worker.cli once --worker parse-finalization-reconciler
@@ -60,6 +62,8 @@ Run continuously:
 
 ```bash
 python -m src.kb_parse_worker.cli run
+python -m src.kb_parse_worker.cli run --worker parse-submitter
+python -m src.kb_parse_worker.cli run --worker parse-finalizer
 python -m src.kb_parse_worker.cli run --worker s3-ready
 python -m src.kb_parse_worker.cli run --worker parse-finalization-reconciler
 ```
@@ -68,15 +72,24 @@ Run continuously under PM2:
 
 ```bash
 pm2 start ecosystem.kb_parse_worker.json
+pm2 start ecosystem.kb_parse_worker.two_stage_async.json
 pm2 save
 pm2 resurrect
 pm2 logs kb-parse-worker
+pm2 logs kb-parse-submitter
+pm2 logs kb-parse-finalizer
 pm2 logs kb-s3-ready-worker
 pm2 restart kb-parse-worker
+pm2 restart kb-parse-submitter
+pm2 restart kb-parse-finalizer
 pm2 restart kb-s3-ready-worker
 pm2 stop kb-parse-worker
+pm2 stop kb-parse-submitter
+pm2 stop kb-parse-finalizer
 pm2 stop kb-s3-ready-worker
 pm2 delete kb-parse-worker
+pm2 delete kb-parse-submitter
+pm2 delete kb-parse-finalizer
 pm2 delete kb-s3-ready-worker
 ```
 
@@ -142,6 +155,36 @@ or `/two_stage/task`. `UNSTRUCTURE_SERVE_BEARER_TOKEN` is reused for both
 submit and status polling. Optional `KB_PARSE_TWO_STAGE_PROVIDER`,
 `KB_PARSE_TWO_STAGE_MODEL`, and `KB_PARSE_TWO_STAGE_PROMPT` can override the
 parser-side vision defaults; leave them unset for normal deployment.
+
+The default `parse` worker keeps the historical synchronous behavior: it submits
+one `/two_stage/task`, polls it to completion, writes processed artifacts, and
+then claims the next KB parse job. To let Unstructure-Serve's Celery queues hold
+a controlled parse backlog instead, run the split async modes:
+
+```text
+KB_PARSE_USE_TWO_STAGE=true
+KB_PARSE_TWO_STAGE_PARSE_QUEUE=queue_parse_gpu
+KB_PARSE_TWO_STAGE_MAX_PARSE_BACKLOG=5
+KB_PARSE_TWO_STAGE_QUEUE_STATUS_TIMEOUT_SECONDS=10
+KB_PARSE_TWO_STAGE_FINALIZER_LIMIT=1
+```
+
+For PM2 deployment of the split mode, stop or delete the historical
+`kb-parse-worker` process first, then start
+`ecosystem.kb_parse_worker.two_stage_async.json`. Keep `kb-s3-ready-worker`
+running from `ecosystem.kb_parse_worker.json`; do not run the historical
+`kb-parse-worker` and split submitter/finalizer against the same parse queue at
+the same time.
+
+`parse-submitter` calls `/two_stage/queue_status` and submits another KB parse
+job only when `queues[KB_PARSE_TWO_STAGE_PARSE_QUEUE] +
+unacked[KB_PARSE_TWO_STAGE_PARSE_QUEUE]` is below
+`KB_PARSE_TWO_STAGE_MAX_PARSE_BACKLOG`. It persists the returned Celery
+`task_id` in `kb_jobs.payload_json.two_stage` through the KB control-plane RPC
+and archives the original parse PGMQ message. `parse-finalizer` claims those
+persisted task ids, polls `/two_stage/task/{task_id}`, extends short polling
+locks for pending tasks, and performs the existing processed-artifact and
+`s3_ready` handoff when a task succeeds.
 
 Both modes request `return_txt=true`. The worker uses the returned `result` JSON
 for chunk embeddings and pickle generation, drops any returned chunk whose
