@@ -12,8 +12,8 @@ checkPaths:
   - requirements.txt
   - src/**
   - docker/**
-lastReviewedAt: 2026-05-20
-lastReviewedCommit: eda42e5c0a485212b71a8aefc808574fa0bf013a
+lastReviewedAt: 2026-06-07
+lastReviewedCommit: 4f8b429b6eb1dc1b0bd9d6dda23da933441cdc8f
 ---
 
 # Unstructure Development Runbook
@@ -228,6 +228,11 @@ fresh through `heartbeat_job(...)`. The worker defaults to:
 KB_PARSE_HEARTBEAT_INTERVAL_SECONDS=60
 KB_PARSE_JOB_TIMEOUT_SECONDS=7200
 ```
+
+When a long-running parse, parse-submitter, parse-finalizer, or S3-ready
+iteration finds no work, the worker backs off from `KB_PARSE_POLL_INTERVAL_SECONDS`
+exponentially up to 60 seconds. Any processed queue message or finalization
+claim resets the delay to the base interval.
 
 Raw and processed artifact paths are derived from the collection storage path.
 For example, collection path `/course/thu_humanities` resolves raw files under

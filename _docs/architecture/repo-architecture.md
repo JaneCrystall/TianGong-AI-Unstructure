@@ -11,8 +11,8 @@ checkPaths:
   - src/**
   - docker/**
   - requirements.txt
-lastReviewedAt: 2026-05-20
-lastReviewedCommit: eda42e5c0a485212b71a8aefc808574fa0bf013a
+lastReviewedAt: 2026-06-07
+lastReviewedCommit: 4f8b429b6eb1dc1b0bd9d6dda23da933441cdc8f
 ---
 
 # Unstructure Architecture

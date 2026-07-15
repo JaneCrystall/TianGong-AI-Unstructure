@@ -37,6 +37,7 @@ from .snapshot import (
 LOGGER = logging.getLogger(__name__)
 FINALIZE_DB_MAX_ATTEMPTS = 3
 FINALIZE_DB_INITIAL_BACKOFF_SECONDS = 1.0
+IDLE_POLL_MAX_SECONDS = 60
 
 
 class JobTimeout(RuntimeError):
@@ -120,6 +121,26 @@ def is_s3_ready_failure_retryable(error: Exception) -> bool:
         return False
 
     return True
+
+
+def _idle_poll_delay_seconds(config: WorkerConfig, idle_iterations: int) -> int:
+    base = max(1, int(config.poll_interval_seconds))
+    max_interval = max(base, getattr(config, "idle_poll_interval_max_seconds", IDLE_POLL_MAX_SECONDS))
+    multiplier = 2 ** max(0, idle_iterations - 1)
+    return min(max_interval, base * multiplier)
+
+
+def _run_forever_with_idle_backoff(config: WorkerConfig, run_once) -> None:
+    idle_iterations = 0
+
+    while True:
+        processed = run_once()
+        if processed:
+            idle_iterations = 0
+            continue
+
+        idle_iterations += 1
+        time.sleep(_idle_poll_delay_seconds(config, idle_iterations))
 
 
 def archive_current_message(conn, queue_name: str, msg_id: int) -> bool:
@@ -680,10 +701,7 @@ class ParseWorker:
         self.config = config
 
     def run_forever(self) -> None:
-        while True:
-            processed = self.run_once()
-            if not processed:
-                time.sleep(self.config.poll_interval_seconds)
+        _run_forever_with_idle_backoff(self.config, self.run_once)
 
     def run_once(self) -> bool:
         message = read_queue_message(self.config, self.config.queue_name)
@@ -819,10 +837,7 @@ class ParseSubmitterWorker:
         self.config = config
 
     def run_forever(self) -> None:
-        while True:
-            processed = self.run_once()
-            if not processed:
-                time.sleep(self.config.poll_interval_seconds)
+        _run_forever_with_idle_backoff(self.config, self.run_once)
 
     def run_once(self) -> bool:
         if not self.config.use_two_stage_parser:
@@ -941,9 +956,7 @@ class ParseFinalizerWorker:
         self.config = config
 
     def run_forever(self) -> None:
-        while True:
-            self.run_once()
-            time.sleep(self.config.poll_interval_seconds)
+        _run_forever_with_idle_backoff(self.config, self.run_once)
 
     def run_once(self) -> bool:
         if not self.config.use_two_stage_parser:
@@ -1085,10 +1098,7 @@ class S3ReadyWorker:
         self.config = config
 
     def run_forever(self) -> None:
-        while True:
-            processed = self.run_once()
-            if not processed:
-                time.sleep(self.config.poll_interval_seconds)
+        _run_forever_with_idle_backoff(self.config, self.run_once)
 
     def run_once(self) -> bool:
         message = read_queue_message(self.config, self.config.s3_ready_queue_name)

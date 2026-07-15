@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import psycopg2
 
@@ -101,6 +101,42 @@ class FakeConnection:
 
 
 class KbParseWorkerReliabilityTests(unittest.TestCase):
+    def test_idle_poll_backs_off_and_caps(self) -> None:
+        config = worker_config()
+        config.poll_interval_seconds = 1
+        config.idle_poll_interval_max_seconds = 4
+        worker = ParseWorker(config)
+
+        with (
+            patch.object(worker, "run_once", return_value=False),
+            patch(
+                "src.kb_parse_worker.worker.time.sleep",
+                side_effect=[None, None, None, KeyboardInterrupt],
+            ) as sleep,
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                worker.run_forever()
+
+        self.assertEqual(sleep.call_args_list, [call(1), call(2), call(4), call(4)])
+
+    def test_idle_poll_resets_after_processed_work(self) -> None:
+        config = worker_config()
+        config.poll_interval_seconds = 1
+        config.idle_poll_interval_max_seconds = 4
+        worker = ParseWorker(config)
+
+        with (
+            patch.object(worker, "run_once", side_effect=[False, False, True, False]),
+            patch(
+                "src.kb_parse_worker.worker.time.sleep",
+                side_effect=[None, None, KeyboardInterrupt],
+            ) as sleep,
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                worker.run_forever()
+
+        self.assertEqual(sleep.call_args_list, [call(1), call(2), call(1)])
+
     def test_parse_failure_classifier_distinguishes_terminal_and_transient(self) -> None:
         self.assertFalse(is_parse_failure_retryable(RuntimeError("EMPTY_RESULT")))
         self.assertFalse(is_parse_failure_retryable(RuntimeError("RAW_STORAGE_PATH_MISMATCH: path")))
